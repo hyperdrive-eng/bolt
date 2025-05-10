@@ -1,0 +1,74 @@
+name: Run Workback on Labeled Issues
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  process-issue:
+    if: github.event.label.name == 'workback'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup Keys
+        run: |
+          mkdir -p ~/.workback
+          echo "${{ secrets.CLAUDE_KEY }}" > ~/.workback/api_key
+          echo "${{ secrets.GH_TOKEN }}" > ~/.workback/github_key
+          chmod 600 ~/.workback/api_key
+          chmod 600 ~/.workback/github_key
+          
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Clone Workback
+        run: |
+          git clone https://x-access-token:${{ secrets.GH_PAT }}@github.com/hyperdrive-eng/workback.git
+          cd workback
+          git checkout pc-workflow
+
+      - name: Install Workback
+        run: |
+          cd workback
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build
+          pip install dist/*.whl
+
+      - name: Run workback CLI
+        id: run-workback
+        run: |
+          workback main --github ${{ github.event.issue.html_url }}
+
+          MD_FILE=$(find ~/.workback/reports -name "final_report.md" -type f | head -1)
+
+          if [ -z "$MD_FILE" ]; then
+            echo "::error::No markdown file was generated"
+            exit 1
+          fi
+
+          MD_CONTENT=$(cat "$MD_FILE")
+
+          echo "md_content<<EOF" >> $GITHUB_OUTPUT
+          echo "$MD_CONTENT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Comment on issue
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_PAT }}
+          script: |
+            const mdContent = `${{ steps.run-workback.outputs.md_content }}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: mdContent
+            });
