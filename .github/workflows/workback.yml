@@ -52,22 +52,14 @@ jobs:
             echo "::error::No markdown file was generated"
             exit 1
           fi
-      
-          # Read the content
-          MD_CONTENT=$(cat "$MD_FILE")
-      
-          # Escape for GitHub output
-          MD_CONTENT="${MD_CONTENT//'%'/'%25'}"
-          MD_CONTENT="${MD_CONTENT//$'\n'/'%0A'}"
-          MD_CONTENT="${MD_CONTENT//$'\r'/'%0D'}"
-      
-          echo "md_content=$MD_CONTENT" >> "$GITHUB_OUTPUT"
+          echo "md_file_path=$MD_FILE" >> "$GITHUB_ENV"
       - name: Comment on issue
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.GH_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const mdContent = process.env.MD_CONTENT;
+            const fs = require('fs');
+            const mdContent = fs.readFileSync(process.env.MD_FILE_PATH, 'utf8');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -75,4 +67,4 @@ jobs:
               body: mdContent
             });
         env:
-          MD_CONTENT: ${{ steps.run-workback.outputs.md_content }}
+          MD_FILE_PATH: ${{ env.md_file_path }}
