@@ -41,24 +41,27 @@ jobs:
           pip install build
           python -m build
           pip install dist/*.whl
-
       - name: Run workback CLI
         id: run-workback
         run: |
           workback main --github ${{ github.event.issue.html_url }}
-
+      
           MD_FILE=$(find ~/.workback/reports -name "final_report.md" -type f | head -1)
-
+      
           if [ -z "$MD_FILE" ]; then
             echo "::error::No markdown file was generated"
             exit 1
           fi
-
+      
+          # Read the content
           MD_CONTENT=$(cat "$MD_FILE")
-
-          echo "md_content<<EOF" >> $GITHUB_OUTPUT
-          echo "$MD_CONTENT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+      
+          # Escape for GitHub output
+          MD_CONTENT="${MD_CONTENT//'%'/'%25'}"
+          MD_CONTENT="${MD_CONTENT//$'\n'/'%0A'}"
+          MD_CONTENT="${MD_CONTENT//$'\r'/'%0D'}"
+      
+          echo "md_content=$MD_CONTENT" >> "$GITHUB_OUTPUT"
 
       - name: Comment on issue
         uses: actions/github-script@v6
