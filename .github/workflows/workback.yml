@@ -3,6 +3,9 @@ name: Run Workback on Labeled Issues
 on:
   issues:
     types: [labeled]
+concurrency:
+  group: issue-processing
+  cancel-in-progress: false
 
 jobs:
   process-issue:
