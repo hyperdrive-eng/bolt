@@ -62,16 +62,17 @@ jobs:
           MD_CONTENT="${MD_CONTENT//$'\r'/'%0D'}"
       
           echo "md_content=$MD_CONTENT" >> "$GITHUB_OUTPUT"
-
       - name: Comment on issue
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GH_PAT }}
           script: |
-            const mdContent = `${{ steps.run-workback.outputs.md_content }}`;
+            const mdContent = process.env.MD_CONTENT;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
               body: mdContent
             });
+        env:
+          MD_CONTENT: ${{ steps.run-workback.outputs.md_content }}
