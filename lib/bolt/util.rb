@@ -21,20 +21,28 @@ module Bolt
 
     # Misc defaults.
     PASSWORD_PROMPT = "Please enter your password: "
-    SUDO_EXEC = if defined?(Bolt::Util::Platform) && Bolt::Util::Platform.respond_to?(:windows?) && Bolt::Util::Platform.windows?
-                 'cmd.exe /c'
-               else
-                 'sudo -S -E -n'
-               end
-    SUDO_PROMPT      = 'sudo password: '
+
+    # Method to determine if running on Windows
+    def self.windows?
+      if defined?(Bolt::Util::Platform) && Bolt::Util::Platform.respond_to?(:windows?)
+        Bolt::Util::Platform.windows?
+      else
+        !!File::ALT_SEPARATOR
+      end
+    end
+
+    # Method to determine if PowerShell is available
+    def self.powershell?
+      windows?
+    end
+
+    sudo_exec = windows? ? 'cmd.exe /c' : 'sudo -S -E -n'
+    SUDO_EXEC = ENV['BOLT_SUDO_EXE'] || sudo_exec
+    SUDO_PROMPT = 'sudo password: '
 
     NT_SEPARATOR = ';'
     POSIX_SEPARATOR = ':'
-    DEFAULT_PATH_SEPARATOR = if defined?(Bolt::Util::Platform) && Bolt::Util::Platform.respond_to?(:windows?) && Bolt::Util::Platform.windows?
-                              NT_SEPARATOR
-                            else
-                              POSIX_SEPARATOR
-                            end
+    DEFAULT_PATH_SEPARATOR = windows? ? NT_SEPARATOR : POSIX_SEPARATOR
 
     def self.read_yaml_hash(path, file)
       logger.debug("Reading yaml hash file at #{path}")
@@ -51,6 +59,15 @@ module Bolt
         result
       rescue Bolt::FileError
         raise Bolt::FileError, "Could not parse #{file} as JSON or YAML"
+      end
+    end
+
+    # For compatibility with existing code that expects this method
+    def self.read_optional_yaml_hash(path, file)
+      if File.exist?(path)
+        read_yaml_hash(path, file)
+      else
+        {}
       end
     end
 
@@ -283,6 +300,7 @@ module Bolt
     # Also accepts an optional visitor Proc that will be passed each container
     # along with its parent.
     def self.walk_vals(data, skip_top = false, visited = {}, &block)
+      # Return data immediately if we've seen this object before
       return data if visited[data.object_id]
       visited[data.object_id] = true
 
