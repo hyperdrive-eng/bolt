@@ -1,196 +1,171 @@
 # frozen_string_literal: true
 
 require 'json'
-require_relative '../bolt/error'
+require 'bolt/error'
 
 module Bolt
   class Result
     attr_reader :target, :value, :action, :object
 
-    def self.from_exception(target, exception, action: 'action', position: [])
-      details = create_details(position)
-      if exception.is_a?(Bolt::Error)
-        error = Bolt::Util.deep_merge({ 'details' => details }, exception.to_h)
+    def self.for_command(target, stdout, stderr, exit_code, action, command, elapsed_time = nil)
+      value = {
+        'stdout' => stdout,
+        'stderr' => stderr,
+        'exit_code' => exit_code,
+        'action' => action,
+        'command' => command
+      }
+      value['elapsed_time'] = elapsed_time if elapsed_time
+      for_target(target, value)
+    end
+
+    def self.for_task(target, stdout, stderr, exit_code, task, elapsed_time = nil)
+      # Parse the output if it's valid json
+      # Due to the limitations of the ruby-json_pure gem when used in the trident
+      # runtime, we need to tell it to parse the string as UTF-8.
+      begin
+        obj = JSON.parse(stdout, encoding: 'UTF-8')
+      rescue StandardError
+        obj = nil
+      end
+
+      if obj.nil?
+        value = {
+          '_output' => stdout,
+          'stderr' => stderr,
+          'exit_code' => exit_code
+        }
       else
-        details['class'] = exception.class.to_s
-        error = {
-          'kind' => 'puppetlabs.tasks/exception-error',
-          'issue_code' => 'EXCEPTION',
-          'msg' => exception.message,
-          'details' => details
-        }
-        error['details']['stack_trace'] = exception.backtrace.join('\n') if exception.backtrace
+        value = obj
+        value['stderr'] = stderr
+        value['exit_code'] = exit_code
       end
-      Result.new(target, error: error, action: action)
+      value['_task'] = task.name
+      value['elapsed_time'] = elapsed_time if elapsed_time
+      for_target(target, value)
     end
 
-    def self.create_details(position)
-      %w[file line].zip(position).to_h.compact
+    def self.for_upload(target, source, destination, elapsed_time = nil)
+      value = {
+        'action' => 'upload',
+        'path' => destination,
+        'src' => source
+      }
+      value['elapsed_time'] = elapsed_time if elapsed_time
+      for_target(target, value)
     end
 
-    def self.for_lookup(target, key, value)
-      val = { 'value' => value }
-      new(target, value: val, action: 'lookup', object: key)
+    def self.for_download(target, source, destination, elapsed_time = nil)
+      value = {
+        'action' => 'download',
+        'path' => source,
+        'dest' => destination
+      }
+      value['elapsed_time'] = elapsed_time if elapsed_time
+      for_target(target, value)
     end
 
-    def self.for_command(target, value, action, command, position)
-      details = create_details(position)
-      unless value['exit_code'] == 0
-        details['exit_code'] = value['exit_code']
-        value['_error'] = {
-          'kind' => 'puppetlabs.tasks/command-error',
-          'issue_code' => 'COMMAND_ERROR',
-          'msg' => "The command failed with exit code #{value['exit_code']}",
-          'details' => details
-        }
-      end
-      new(target, value: value, action: action, object: command)
+    def self.for_message(target, message)
+      value = {
+        'action' => 'message',
+        'message' => message
+      }
+      for_target(target, value)
     end
 
-    def self.for_task(target, stdout, stderr, exit_code, task, position)
-      stdout.force_encoding('utf-8') unless stdout.encoding == Encoding::UTF_8
+    def self.for_error(target, error)
+      value = {
+        'action' => 'error',
+        'object' => error.message,
+        'status' => 'failure'
+      }
+      details = error.to_h
+      value.merge!(details) if details.is_a?(Hash)
 
-      details = create_details(position)
-      value = if stdout.valid_encoding?
-                parse_hash(stdout) || { '_output' => stdout }
-              else
-                { '_error' => { 'kind' => 'puppetlabs.tasks/task-error',
-                                'issue_code' => 'TASK_ERROR',
-                                'msg' => 'The task result contained invalid UTF-8 on stdout',
-                                'details' => details } }
-              end
-
-      if exit_code != 0 && value['_error'].nil?
-        msg = if stdout.empty?
-                if stderr.empty?
-                  "The task failed with exit code #{exit_code} and no output"
-                else
-                  "The task failed with exit code #{exit_code} and no stdout, but stderr contained:\n#{stderr}"
-                end
-              else
-                "The task failed with exit code #{exit_code}"
-              end
-        details['exit_code'] = exit_code
-        value['_error'] = { 'kind' => 'puppetlabs.tasks/task-error',
-                            'issue_code' => 'TASK_ERROR',
-                            'msg' => msg,
-                            'details' => details }
-      end
-
-      if value.key?('_error')
-        unless value['_error'].is_a?(Hash) && value['_error'].key?('msg')
-          details['original_error'] = value['_error']
-          value['_error'] = {
-            'msg'     => "Invalid error returned from task #{task}: #{value['_error'].inspect}. Error "\
-                         "must be an object with a msg key.",
-            'kind'    => 'bolt/invalid-task-error',
-            'details' => details
-          }
-        end
-
-        value['_error']['kind']    ||= 'bolt/error'
-        value['_error']['details'] ||= details
-      end
-
-      if value.key?('_sensitive')
-        value['_sensitive'] = Puppet::Pops::Types::PSensitiveType::Sensitive.new(value['_sensitive'])
-      end
-
-      new(target, value: value, action: 'task', object: task)
+      new(target, error, value)
     end
 
-    def self.parse_hash(string)
-      value = JSON.parse(string)
-      value if value.is_a? Hash
-    rescue JSON::ParserError
-      nil
+    def self.for_plan_error(target, error)
+      value = {
+        'action' => 'plan_error',
+        'object' => error.message,
+        'status' => 'failure'
+      }
+      details = error.to_h
+      value.merge!(details) if details.is_a?(Hash)
+
+      new(target, error, value)
     end
 
-    def self.for_upload(target, source, destination)
-      new(target, message: "Uploaded '#{source}' to '#{target.host}:#{destination}'", action: 'upload', object: source)
+    def self.for_target(target, value = {})
+      new(target, nil, value)
     end
 
-    def self.for_download(target, source, destination, download)
-      msg   = "Downloaded '#{target.host}:#{source}' to '#{destination}'"
-      value = { 'path' => download }
-
-      new(target, value: value, message: msg, action: 'download', object: source)
-    end
-
-    # Satisfies the Puppet datatypes API
-    def self.from_asserted_args(target, value)
-      new(target, value: value)
-    end
-
-    def self._pcore_init_from_hash
-      raise "Result shouldn't be instantiated from a pcore_init class method. How did this get called?"
-    end
-
-    def _pcore_init_from_hash(init_hash)
-      opts = init_hash.reject { |k, _v| k == 'target' }
-      initialize(init_hash['target'], **opts.transform_keys(&:to_sym))
-    end
-
-    def _pcore_init_hash
-      { 'target' => @target,
-        'error' => @value['_error'],
-        'message' => @value['_output'],
-        'value' => @value,
-        'action' => @action,
-        'object' => @object }
-    end
-
-    def initialize(target, error: nil, message: nil, value: nil, action: 'action', object: nil)
+    def initialize(target, error = nil, value = {})
       @target = target
-      @value = value || {}
-      @action = action
-      @object = object
-      if error && !error.is_a?(Hash)
-        raise "TODO: how did we get a string error"
+      @value = value
+      @action = value['action']
+      @object = value['object']
+      @error = error
+    end
+
+    def error_hash
+      @error.to_h
+    end
+
+    def status
+      if @error
+        'failure'
+      elsif @value.include?('_error')
+        status = @value['_error']['status']
+        if ['failure', 'success'].include?(status)
+          status
+        else
+          msg = "Invalid status: '#{status}' in result from #{@target.safe_name}"
+          raise Bolt::InvalidResultStatus, msg
+        end
+      else
+        'success'
       end
-      @value['_error'] = error if error
-      @value['_output'] = message if message
+    end
+
+    def ok?
+      status == 'success'
+    end
+    alias ok ok?
+    alias success? ok?
+
+    def error
+      if @error
+        @error
+      elsif @value.include?('_error')
+        begin
+          err = Bolt::Error.new(
+            @value['_error']['msg'],
+            @value['_error']['kind'],
+            @value['_error']['details']
+          )
+        rescue StandardError
+          err = Bolt::Error.new(@value['_error'].to_s)
+        end
+        err
+      end
     end
 
     def message
-      @value['_output']
+      @value['message'] || error&.message
     end
 
-    def message?
-      message && !message.strip.empty?
+    def action_and_object
+      "#{@action} #{@object}"
     end
 
-    def generic_value
-      safe_value.reject { |k, _| %w[_error _output].include? k }
-    end
-
-    def eql?(other)
-      self.class == other.class &&
-        target == other.target &&
-        value == other.value
-    end
-    alias == eql?
-
-    def [](key)
-      value[key]
-    end
-
-    def to_json(opts = nil)
-      to_data.to_json(opts)
-    end
-
-    def to_s
-      to_json
-    end
-
-    # This is the value with all non-UTF-8 characters removed, suitable for
-    # printing or converting to JSON. It *should* only be possible to have
-    # non-UTF-8 characters in stdout/stderr keys as they are not allowed from
-    # tasks but we scrub the whole thing just in case.
     def safe_value
       Bolt::Util.walk_vals(value) do |val|
-        if val.is_a?(String)
-          # Replace invalid bytes with hex codes, ie. \xDE\xAD\xBE\xEF
+        if val.is_a?(Bolt::Error)
+          # Create a simple hash representation without recursing to avoid circular references
+          { 'kind' => val.kind, 'msg' => val.message }
+        elsif val.is_a?(String)
           val.scrub { |c| c.bytes.map { |b| "\\x" + b.to_s(16).upcase }.join }
         else
           val
@@ -198,50 +173,68 @@ module Bolt
       end
     end
 
+    def to_json(opts = nil)
+      to_data.to_json(opts)
+    end
+
     def to_data
-      serialized_value = safe_value
-
-      if serialized_value.key?('_sensitive') &&
-         serialized_value['_sensitive'].is_a?(Puppet::Pops::Types::PSensitiveType::Sensitive)
-        serialized_value['_sensitive'] = serialized_value['_sensitive'].to_s
-      end
-
       {
         "target" => @target.name,
-        "action" => action,
-        "object" => object,
+        "action" => @action,
+        "object" => @object,
         "status" => status,
-        "value"  => serialized_value
+        "value" => safe_value
       }
     end
 
-    def status
-      ok? ? 'success' : 'failure'
+    def guess_target
+      @target.guess_target
     end
 
-    def ok?
-      error_hash.nil?
-    end
-    alias ok ok?
-    alias success? ok?
-
-    # This allows access to errors outside puppet compilation
-    # it should be prefered over error in bolt code
-    def error_hash
-      value['_error']
+    def host
+      @target.host
     end
 
-    # Warning: This will fail outside of a compilation.
-    # Use error_hash inside bolt.
-    # Is it crazy for this to behave differently outside a compiler?
-    def error
-      if error_hash
-        Puppet::DataTypes::Error.from_asserted_hash(error_hash)
+    def uri
+      @target.uri
+    end
+
+    def safe_name
+      @target.safe_name
+    end
+
+    def target_hash
+      if defined? @target.to_h
+        @target.to_h
+      else
+        @target.select_keys(%i[uri name host protocol user port])
       end
     end
 
-    def sensitive
-      value['_sensitive']
+    def eql?(other)
+      self.class == other.class &&
+        target == other.target &&
+        value == other.value
+    end
+
+    def [](key)
+      value[key]
+    end
+
+    def ==(other)
+      eql?(other)
+    end
+
+    def to_h
+      @value
+    end
+
+    def to_s
+      to_json
+    end
+
+    def formatted_value
+      to_h.to_s
     end
   end
 end

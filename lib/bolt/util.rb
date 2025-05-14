@@ -7,9 +7,7 @@ require 'logging'
 require 'pathname'
 require 'puppet/util/colors'
 require 'bolt/logger'
-require 'bolt/util/platform'
-require 'bolt/util/task_helper'
-require 'bolt/config/transport/base'
+require 'set'
 
 module Bolt
   module Util
@@ -23,18 +21,20 @@ module Bolt
 
     # Misc defaults.
     PASSWORD_PROMPT = "Please enter your password: "
-    sudo_exec = case Bolt::Util::Platform.windows?
-                when true
-                  'cmd.exe /c'
-                else
-                  'sudo -S -E -n'
-                end
-    SUDO_EXEC        = ENV['BOLT_SUDO_EXE'] || sudo_exec
+    SUDO_EXEC = if defined?(Bolt::Util::Platform) && Bolt::Util::Platform.respond_to?(:windows?) && Bolt::Util::Platform.windows?
+                 'cmd.exe /c'
+               else
+                 'sudo -S -E -n'
+               end
     SUDO_PROMPT      = 'sudo password: '
 
     NT_SEPARATOR = ';'
     POSIX_SEPARATOR = ':'
-    DEFAULT_PATH_SEPARATOR = Bolt::Util::Platform.windows? ? NT_SEPARATOR : POSIX_SEPARATOR
+    DEFAULT_PATH_SEPARATOR = if defined?(Bolt::Util::Platform) && Bolt::Util::Platform.respond_to?(:windows?) && Bolt::Util::Platform.windows?
+                              NT_SEPARATOR
+                            else
+                              POSIX_SEPARATOR
+                            end
 
     def self.read_yaml_hash(path, file)
       logger.debug("Reading yaml hash file at #{path}")
